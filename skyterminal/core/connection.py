@@ -21,18 +21,22 @@ class ConnectionManager:
         self.sessions = sessions
 
     async def handle_command(
-        self, token: ConnectionToken, command: str
+        self, token: ConnectionToken, command: str,
+        session_override: str | None = None,
     ) -> str:
         """Process a command from an authenticated connection."""
+        session = session_override or token.session_name or "skyterminal"
+
         if token.permission == Permission.VIEW:
-            session = token.session_name or "skyterminal"
             return await self.sessions.read_pane(session)
 
-        session = token.session_name or "skyterminal"
         self.sessions.ensure_session(session)
         return await self.sessions.execute_command(session, command)
 
-    async def read_output(self, token: ConnectionToken) -> str:
+    async def read_output(
+        self, token: ConnectionToken,
+        session_override: str | None = None,
+    ) -> str:
         """Read current terminal output for any permission level."""
-        session = token.session_name or "skyterminal"
+        session = session_override or token.session_name or "skyterminal"
         return await self.sessions.read_pane(session)
