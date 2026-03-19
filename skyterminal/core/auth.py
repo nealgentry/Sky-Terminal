@@ -1,5 +1,7 @@
 """Authentication and permission management."""
 
+from __future__ import annotations
+
 import secrets
 from dataclasses import dataclass, field
 from enum import Enum

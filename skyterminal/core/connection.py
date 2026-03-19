@@ -1,5 +1,7 @@
 """Connection point management."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from .auth import AuthManager, ConnectionToken, Permission
 from .session import SessionManager

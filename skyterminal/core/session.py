@@ -1,7 +1,12 @@
 """Tmux session management."""
 
+from __future__ import annotations
+
 import asyncio
+import os
 import subprocess
+import tempfile
+import uuid
 from dataclasses import dataclass
 
 
@@ -80,15 +85,19 @@ class SessionManager:
         """Send a command to a tmux session and capture the output."""
         self.ensure_session(session_name)
 
-        # Clear the pane, send the command with a unique marker
-        marker = f"__SKY_END_{id(command)}__"
+        # Write output to a temp file to avoid pane-scraping issues
+        uid = uuid.uuid4().hex[:12]
+        out_file = f"/tmp/sky_{uid}.out"
+        done_file = f"/tmp/sky_{uid}.done"
 
-        # Send command and echo marker when done
-        full_cmd = f"{command}; echo '{marker}'"
+        # Run command, redirect output to file, then touch done marker
+        full_cmd = (
+            f"{{ {command}; }} > {out_file} 2>&1; "
+            f"touch {done_file}"
+        )
         self._run_tmux("send-keys", "-t", session_name, full_cmd, "Enter")
 
-        # Poll for the marker in pane output
-        output = ""
+        # Poll for the done file
         elapsed = 0.0
         interval = 0.3
 
@@ -96,32 +105,26 @@ class SessionManager:
             await asyncio.sleep(interval)
             elapsed += interval
 
-            result = self._run_tmux("capture-pane", "-t", session_name, "-p", "-S", "-100")
-            if result.returncode != 0:
-                continue
+            if os.path.exists(done_file):
+                try:
+                    with open(out_file, "r") as f:
+                        output = f.read().strip()
+                finally:
+                    # Clean up temp files
+                    for f in (out_file, done_file):
+                        try:
+                            os.remove(f)
+                        except OSError:
+                            pass
+                return output
 
-            pane_content = result.stdout
-            if marker in pane_content:
-                # Extract output between command and marker
-                lines = pane_content.split("\n")
-                output_lines = []
-                capturing = False
-                for line in lines:
-                    if marker in line:
-                        break
-                    if capturing:
-                        output_lines.append(line)
-                    if command in line and not capturing:
-                        capturing = True
-
-                output = "\n".join(output_lines).strip()
-                # Clean up marker from pane
-                break
-
-        if not output and elapsed >= timeout:
-            output = "[Command timed out after {:.0f}s]".format(timeout)
-
-        return output
+        # Clean up on timeout
+        for f in (out_file, done_file):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        return "[Command timed out after {:.0f}s]".format(timeout)
 
     async def read_pane(self, session_name: str, lines: int = 50) -> str:
         """Read the current pane content (for view-only connections)."""

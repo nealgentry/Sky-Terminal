@@ -1,5 +1,7 @@
 """Telegram bot interface for Sky Terminal."""
 
+from __future__ import annotations
+
 import asyncio
 import logging
 from telegram import Update

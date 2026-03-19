@@ -1,9 +1,12 @@
 """Configuration management for Sky Terminal."""
 
+from __future__ import annotations
+
 import json
 import os
 import secrets
 from pathlib import Path
+from typing import Optional
 
 DEFAULT_CONFIG_PATH = Path.home() / ".skyterminal" / "config.json"
 
