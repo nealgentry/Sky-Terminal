@@ -33,6 +33,32 @@ class ConnectionManager:
         self.sessions.ensure_session(session)
         return await self.sessions.execute_command(session, command)
 
+    async def handle_interactive(
+        self, token: ConnectionToken, command: str,
+        session_override: str | None = None,
+    ) -> str:
+        """Launch an interactive command (no output capture)."""
+        session = session_override or token.session_name or "skyterminal"
+
+        if token.permission == Permission.VIEW:
+            return await self.sessions.read_pane(session)
+
+        self.sessions.ensure_session(session)
+        return await self.sessions.send_raw(session, command)
+
+    async def handle_keys(
+        self, token: ConnectionToken, keys: str,
+        session_override: str | None = None,
+    ) -> str:
+        """Send keystrokes to the active session."""
+        session = session_override or token.session_name or "skyterminal"
+
+        if token.permission == Permission.VIEW:
+            return await self.sessions.read_pane(session)
+
+        self.sessions.ensure_session(session)
+        return await self.sessions.send_keys(session, keys)
+
     async def read_output(
         self, token: ConnectionToken,
         session_override: str | None = None,

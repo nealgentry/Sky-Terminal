@@ -126,6 +126,60 @@ class SessionManager:
                 pass
         return "[Command timed out after {:.0f}s]".format(timeout)
 
+    async def send_raw(self, session_name: str, command: str) -> str:
+        """Send a command directly to tmux without output capture.
+
+        Used for interactive/TUI programs like htop, vim, claude, etc.
+        Returns a pane snapshot taken shortly after launching.
+        """
+        self.ensure_session(session_name)
+        self._run_tmux("send-keys", "-t", session_name, command, "Enter")
+        # Brief delay to let the program start rendering
+        await asyncio.sleep(0.5)
+        return await self.read_pane(session_name)
+
+    async def send_keys(self, session_name: str, keys: str) -> str:
+        """Send raw keystrokes to a tmux session.
+
+        Supports special key names: ctrl+c, enter, escape, up, down, left, right,
+        space, tab, backspace, pageup, pagedown, home, end, f1-f12.
+        """
+        self.ensure_session(session_name)
+
+        # Map friendly names to tmux key names
+        key_map = {
+            "ctrl+c": "C-c",
+            "ctrl+d": "C-d",
+            "ctrl+z": "C-z",
+            "ctrl+l": "C-l",
+            "ctrl+a": "C-a",
+            "ctrl+e": "C-e",
+            "ctrl+r": "C-r",
+            "ctrl+x": "C-x",
+            "enter": "Enter",
+            "escape": "Escape",
+            "esc": "Escape",
+            "up": "Up",
+            "down": "Down",
+            "left": "Left",
+            "right": "Right",
+            "space": "Space",
+            "tab": "Tab",
+            "backspace": "BSpace",
+            "pageup": "PageUp",
+            "pagedown": "PageDown",
+            "home": "Home",
+            "end": "End",
+        }
+        # Add F-keys
+        for i in range(1, 13):
+            key_map[f"f{i}"] = f"F{i}"
+
+        tmux_key = key_map.get(keys.lower().strip(), keys)
+        self._run_tmux("send-keys", "-t", session_name, tmux_key)
+        await asyncio.sleep(0.2)
+        return await self.read_pane(session_name)
+
     async def read_pane(self, session_name: str, lines: int = 50) -> str:
         """Read the current pane content (for view-only connections)."""
         self.ensure_session(session_name)

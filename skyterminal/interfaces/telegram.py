@@ -32,6 +32,8 @@ class TelegramInterface:
         self.app: Application | None = None
         # Runtime session overrides per user (not persisted)
         self._user_sessions: dict[int, str] = {}
+        # Live mode tasks per user
+        self._live_tasks: dict[int, asyncio.Task] = {}
 
     def _get_token(self, user_id: int):
         return self.auth.verify_telegram_user(user_id)
@@ -54,7 +56,11 @@ class TelegramInterface:
                 f"/switch <name> - switch session\n"
                 f"/newsession <name> - create session\n"
                 f"/killsession <name> - kill session\n"
-                f"/view - view pane output\n\n"
+                f"/view - view pane output\n"
+                f"/run <cmd> - launch interactive program\n"
+                f"/send <key> - send keystrokes (ctrl+c, etc)\n"
+                f"/live [secs] - auto-refresh screen\n"
+                f"/stop - stop live mode\n\n"
                 f"Send any text to execute as a command."
             )
         else:
@@ -186,6 +192,149 @@ class TelegramInterface:
         else:
             await update.message.reply_text("(empty pane)")
 
+    async def cmd_run(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Launch an interactive/TUI command (htop, vim, claude, etc.)."""
+        user_id = update.effective_user.id
+        token = self._get_token(user_id)
+        if not token:
+            await update.message.reply_text("Not authorized.")
+            return
+
+        if token.permission != Permission.FULL:
+            await update.message.reply_text("Full access required.")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /run <command>\n\n"
+                "Launches a command directly in tmux (for interactive programs).\n"
+                "Examples: /run htop, /run vim, /run claude\n\n"
+                "Use /send to send keystrokes (e.g. /send ctrl+c)\n"
+                "Use /view to see current screen\n"
+                "Use /live to auto-refresh"
+            )
+            return
+
+        command = " ".join(context.args)
+        await update.message.chat.send_action("typing")
+
+        try:
+            session = self._get_session(user_id, token)
+            output = await self.connection.handle_interactive(
+                token, command, session_override=session
+            )
+            if not output:
+                output = "(empty screen)"
+            if len(output) > 4000:
+                output = output[-4000:]
+            await update.message.reply_text(f"```\n{output}\n```", parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Interactive command error: {e}")
+            await update.message.reply_text(f"Error: {e}")
+
+    async def cmd_send(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Send keystrokes to the active tmux session."""
+        user_id = update.effective_user.id
+        token = self._get_token(user_id)
+        if not token:
+            await update.message.reply_text("Not authorized.")
+            return
+
+        if token.permission != Permission.FULL:
+            await update.message.reply_text("Full access required.")
+            return
+
+        if not context.args:
+            await update.message.reply_text(
+                "Usage: /send <key>\n\n"
+                "Special keys: ctrl+c, ctrl+d, ctrl+z, ctrl+l, "
+                "enter, escape, up, down, left, right, space, tab, "
+                "backspace, pageup, pagedown, home, end, f1-f12\n\n"
+                "Or send literal text: /send q"
+            )
+            return
+
+        keys = " ".join(context.args)
+        try:
+            session = self._get_session(user_id, token)
+            output = await self.connection.handle_keys(
+                token, keys, session_override=session
+            )
+            if not output:
+                output = "(empty screen)"
+            if len(output) > 4000:
+                output = output[-4000:]
+            await update.message.reply_text(f"```\n{output}\n```", parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"Send keys error: {e}")
+            await update.message.reply_text(f"Error: {e}")
+
+    async def cmd_live(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Toggle live auto-refresh of the pane view."""
+        user_id = update.effective_user.id
+        token = self._get_token(user_id)
+        if not token:
+            await update.message.reply_text("Not authorized.")
+            return
+
+        # If already running, stop it
+        if user_id in self._live_tasks:
+            self._live_tasks[user_id].cancel()
+            del self._live_tasks[user_id]
+            await update.message.reply_text("Live mode stopped.")
+            return
+
+        interval = 3  # default seconds
+        if context.args:
+            try:
+                interval = max(2, min(30, int(context.args[0])))
+            except ValueError:
+                await update.message.reply_text("Usage: /live [seconds 2-30]")
+                return
+
+        session = self._get_session(user_id, token)
+        chat_id = update.effective_chat.id
+        last_output = ""
+
+        async def live_loop():
+            nonlocal last_output
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    output = await self.connection.read_output(
+                        token, session_override=session
+                    )
+                    # Only send if output changed
+                    if output and output != last_output:
+                        last_output = output
+                        if len(output) > 4000:
+                            output = output[-4000:]
+                        await self.app.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"```\n{output}\n```",
+                            parse_mode="Markdown",
+                        )
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                logger.error(f"Live mode error: {e}")
+
+        task = asyncio.create_task(live_loop())
+        self._live_tasks[user_id] = task
+        await update.message.reply_text(
+            f"Live mode ON (every {interval}s). Send /live again to stop."
+        )
+
+    async def cmd_stop(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Stop live mode."""
+        user_id = update.effective_user.id
+        if user_id in self._live_tasks:
+            self._live_tasks[user_id].cancel()
+            del self._live_tasks[user_id]
+            await update.message.reply_text("Live mode stopped.")
+        else:
+            await update.message.reply_text("Live mode is not active.")
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         token = self._get_token(user_id)
@@ -231,6 +380,10 @@ class TelegramInterface:
         self.app.add_handler(CommandHandler("newsession", self.cmd_newsession))
         self.app.add_handler(CommandHandler("killsession", self.cmd_killsession))
         self.app.add_handler(CommandHandler("view", self.cmd_view))
+        self.app.add_handler(CommandHandler("run", self.cmd_run))
+        self.app.add_handler(CommandHandler("send", self.cmd_send))
+        self.app.add_handler(CommandHandler("live", self.cmd_live))
+        self.app.add_handler(CommandHandler("stop", self.cmd_stop))
         self.app.add_handler(MessageHandler(
             filters.TEXT & ~filters.COMMAND, self.handle_message
         ))
@@ -241,6 +394,11 @@ class TelegramInterface:
         await self.app.updater.start_polling()
 
     async def stop(self):
+        # Cancel all live mode tasks
+        for task in self._live_tasks.values():
+            task.cancel()
+        self._live_tasks.clear()
+
         if self.app:
             await self.app.updater.stop()
             await self.app.stop()
